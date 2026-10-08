@@ -1,0 +1,14 @@
+services:
+  ledger-sentry:
+    build: .
+    container_name: ledger-sentry
+    restart: unless-stopped
+    environment:
+      LEDGER_PASSWORD: ${LEDGER_PASSWORD}
+      LEDGER_SECRET_KEY: ${LEDGER_SECRET_KEY}
+      LEDGER_ALERT_PERCENT: ${LEDGER_ALERT_PERCENT:-10}
+      LEDGER_ALERT_DOLLARS: ${LEDGER_ALERT_DOLLARS:-5}
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8787:8787"
