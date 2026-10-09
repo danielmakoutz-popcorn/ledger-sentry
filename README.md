@@ -1,8 +1,12 @@
 # Ledger Sentry
 
-A small, local-first household finance dashboard designed to run beside a Bitcoin node without touching Bitcoin Core.
+A local-first household finance service built with **FastAPI, SQLite, and Docker Compose**. It imports transactions, identifies recurring charges, and exposes a password-protected dashboard and JSON summary. It can run beside a Bitcoin node without accessing Bitcoin Core.
 
-## What works now
+The operations work is visible in persistent storage, repeatable imports, an optional background sync worker, a localhost-only service binding, and a container restart policy.
+
+**Review the evidence:** [recorded validation and recovery steps](docs/VALIDATION.md). Offline checks passed for duplicate imports, malformed-row handling, recurring-charge alerts, external-record updates, and SQLite backup readability. HTTP, Docker startup, and Plaid integration were not exercised in that validation.
+
+## Implemented in source
 
 - Password-protected web UI
 - CSV transaction imports with duplicate protection
@@ -18,6 +22,18 @@ A small, local-first household finance dashboard designed to run beside a Bitcoi
 - JSON summary endpoint at `/api/summary`
 - SQLite storage; no transaction data is sent to an LLM
 - Plaid access tokens are encrypted at rest when bank sync is enabled
+
+## Architecture and engineering evidence
+
+| Component | Responsibility | Source / evidence |
+| --- | --- | --- |
+| FastAPI application | Session checks, HTML routes, CSV upload, JSON summary, `/health` | [app/main.py](app/main.py) |
+| SQLite store | Unique import keys, parameterized writes, indexes, external-record upserts | [app/db.py](app/db.py); offline checks passed |
+| Transaction logic | Normalize merchants, categorize spending, detect recurring charges and increases | [app/logic.py](app/logic.py); sample alerts verified |
+| Plaid integration | Encrypt stored tokens, reconcile added/modified/removed records, retain sync cursor and last error | [app/plaid.py](app/plaid.py); source inspection only |
+| Local deployment | Persist `/data`, bind `127.0.0.1:8787`, restart unless explicitly stopped | [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml); configuration inspection only |
+
+CSV data flows through the import logic into SQLite; the dashboard and summary query that same store. When configured, the in-process Plaid task also writes to SQLite. This is a single-process local service.
 
 ## Security model
 
@@ -101,11 +117,23 @@ Recurring detection currently looks for repeated normalized merchants with weekl
 - `What can I cull?`
 - `How do I cancel Spotify?`
 
-The question box is deterministic in this release. It does not need an AI API and cannot hallucinate financial totals.
+The question box is deterministic in this release. Its answers use local calculations and rules rather than an AI API.
 
 ## Optional automatic bank sync with Plaid
 
-CSV import works with no third-party account. For automatic syncing, put your own Plaid credentials in `.env` and restart the container. Start with `PLAID_ENV=sandbox`; production connections require your Plaid production setup/approval. Open **Banks** in Ledger Sentry and choose **Connect bank**.
+CSV import works with no third-party account. The Plaid integration is implemented, but **the checked-in Compose file forwards only the password, session secret, and alert thresholds**. Editing the Plaid fields in `.env` alone does not enable bank sync inside the container.
+
+For a local Plaid trial, put your credentials in `.env` and add the following `environment` entries to the `ledger-sentry` service in your local Compose configuration:
+
+```yaml
+PLAID_ENV: ${PLAID_ENV:-sandbox}
+PLAID_CLIENT_ID: ${PLAID_CLIENT_ID:-}
+PLAID_SECRET: ${PLAID_SECRET:-}
+PLAID_REDIRECT_URI: ${PLAID_REDIRECT_URI:-}
+LEDGER_SYNC_MINUTES: ${LEDGER_SYNC_MINUTES:-240}
+```
+
+Recreate the service with `docker compose up -d --build`. Start with `PLAID_ENV=sandbox`; production connections require your Plaid production setup/approval. Open **Banks** in Ledger Sentry and choose **Connect bank**. This integration has not been validated in the recorded offline checks.
 
 The app creates a Plaid Link session, exchanges the temporary public token on the backend, encrypts the resulting access token at rest, and uses `/transactions/sync` to reconcile added, modified, and removed transactions. A lightweight in-process task checks linked Items every `LEDGER_SYNC_MINUTES` (default 240 minutes).
 
@@ -115,7 +143,21 @@ For OAuth institutions, set `PLAID_REDIRECT_URI` to the registered HTTPS Ledger 
 
 ## Backups
 
-The persistent database is `data/ledger.db`. Back that file up only to an encrypted destination.
+The persistent database is `data/ledger.db`. Use SQLite's backup API, or stop the service before copying the database, and store the backup in an encrypted destination. See the [recovery steps](docs/VALIDATION.md#local-operation-and-recovery).
+
+Token encryption uses a key derived from `LEDGER_SECRET_KEY`; preserve that secret securely with the backup. Changing it invalidates sessions and prevents decryption of previously stored Plaid tokens. Transaction rows themselves are not encrypted by the application.
+
+## Validation and next improvements
+
+Run the included checks with Python 3.12, without Docker or bank credentials:
+
+```bash
+python3 scripts/validate_local.py
+```
+
+The script uses a temporary database and the bundled sample CSV. It does not read or change the household database.
+
+Next improvements, **not implemented or validated in this update**: forward optional sync configuration directly in Compose, report worker/database readiness separately from `/health`, and add HTTP/session and Plaid sandbox integration checks. `/health` currently returns a fixed `{"ok": true}`; it does not prove database or bank-sync health.
 
 ## Project layout
 
